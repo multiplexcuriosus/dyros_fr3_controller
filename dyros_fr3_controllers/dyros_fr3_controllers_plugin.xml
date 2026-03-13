@@ -12,4 +12,8 @@
          type="dyros_fr3_controllers::TestPositionController" base_class_type="controller_interface::ControllerInterface">
     <description>Auto-generated controller</description>
   </class>
+  <class name="dyros_fr3_controllers/My_effort_controller"
+         type="dyros_fr3_controllers::My_effort_controller" base_class_type="controller_interface::ControllerInterface">
+    <description>Auto-generated controller</description>
+  </class>
 </library>

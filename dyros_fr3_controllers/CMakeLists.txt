@@ -36,7 +36,8 @@ add_library(${PROJECT_NAME} SHARED
 
         src/test_effort_controller.cpp
         src/test_velocity_controller.cpp
-        src/test_position_controller.cpp)
+        src/test_position_controller.cpp
+        src/my_effort_controller.cpp)
 
 target_include_directories(${PROJECT_NAME} PUBLIC
         include
@@ -93,4 +94,11 @@ ament_export_dependencies(
         moveit_core
 )
 
+
+
+install(PROGRAMS
+  ${PROJECT_NAME}/my_effort_controller/ros2_qt_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME My_effort_controllerQT
+)
 ament_package()
