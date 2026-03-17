@@ -9,6 +9,7 @@
 #include <Eigen/Dense>
 #include <unsupported/Eigen/MatrixFunctions>
 #include <fstream>
+#include <iostream>
 
 #define GRAVITY 9.80665
 #define MAX_DOF 50U

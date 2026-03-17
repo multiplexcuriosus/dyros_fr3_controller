@@ -14,16 +14,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies
+# Dependencies
 find_package(ament_cmake                REQUIRED)
-find_package(ament_index_cpp            REQUIRED)
 find_package(controller_interface       REQUIRED)
 find_package(franka_msgs                REQUIRED)
 find_package(franka_semantic_components REQUIRED)
 find_package(geometry_msgs              REQUIRED)
 find_package(hardware_interface         REQUIRED)
-find_package(moveit_core                REQUIRED)
-find_package(moveit_msgs                REQUIRED)
 find_package(pinocchio                  REQUIRED)
 find_package(pluginlib                  REQUIRED)
 find_package(rclcpp                     REQUIRED)
@@ -36,14 +33,12 @@ find_package(dyros_fr3_interfaces       REQUIRED)
 set(CONTROLLER_LIB ${PROJECT_NAME}_plugin)
 
 add_library(${CONTROLLER_LIB} SHARED
-  src/test_effort_controller.cpp
-  src/test_velocity_controller.cpp
-  src/test_position_controller.cpp
   src/my_effort_controller.cpp
 )
 
 target_include_directories(${CONTROLLER_LIB} PUBLIC
-  include
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIRS}
 )
 
@@ -53,8 +48,6 @@ ament_target_dependencies(${CONTROLLER_LIB}
   franka_semantic_components
   geometry_msgs
   hardware_interface
-  moveit_core
-  moveit_msgs
   pinocchio
   pluginlib
   rclcpp
@@ -67,6 +60,7 @@ ament_target_dependencies(${CONTROLLER_LIB}
 pluginlib_export_plugin_description_file(controller_interface dyros_fr3_controllers_plugin.xml)
 
 install(TARGETS ${CONTROLLER_LIB}
+  EXPORT export_${PROJECT_NAME}
   RUNTIME DESTINATION bin
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -85,6 +79,12 @@ install(DIRECTORY utils/
   FILES_MATCHING PATTERN "*.py"
 )
 
+install(PROGRAMS
+  ${PROJECT_NAME}/my_effort_controller/ros2_qt_gui.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME My_effort_controllerQT
+)
+
 ament_export_include_directories(include)
 ament_export_libraries(${CONTROLLER_LIB})
 
@@ -94,13 +94,6 @@ ament_export_dependencies(
   rclcpp
   rclcpp_lifecycle
   hardware_interface
-  moveit_core
-)
-
-install(PROGRAMS
-  ${PROJECT_NAME}/my_effort_controller/ros2_qt_gui.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME My_effort_controllerQT
 )
 
 ament_package()

@@ -6,6 +6,25 @@
 #include <pluginlib/class_list_macros.hpp>
 #include <rclcpp/parameter_client.hpp>
 
+#include "franka_semantic_components/franka_robot_model.hpp"
+#include "franka_semantic_components/franka_robot_state.hpp"
+
+#include "math_type_define.h"
+#include "suhan_benchmark.h"
+
+#include <pinocchio/parsers/urdf.hpp>
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/algorithm/rnea.hpp>
+#include <pinocchio/algorithm/crba.hpp>
+#include <pinocchio/algorithm/compute-all-terms.hpp>
+#include <pinocchio/algorithm/jacobian.hpp>
+#include <pinocchio/multibody/joint/joint-collection.hpp>
+
+#include <cassert>
+#include <cmath>
+#include <exception>
+
 namespace dyros_fr3_controllers
 {
 
@@ -65,11 +84,36 @@ CallbackReturn My_effort_controller::on_init()
     {
       try
       {
-        std::string tmp_urdf_xml = cm_params[0].value_to_string();
-        pinocchio::urdf::buildModelFromXML(tmp_urdf_xml, model_);
-        data_ = pinocchio::Data(model_);
-        data_worker_ = pinocchio::Data(model_);
+        if (cm_params.empty()) {
+          LOGE(get_node(), "No parameters returned from controller_manager");
+          return CallbackReturn::ERROR;
+        }
 
+        std::string tmp_urdf_xml = cm_params[0].as_string();
+        {
+          std::ofstream urdf_out("/tmp/controller_manager_robot_description.urdf");
+          urdf_out << tmp_urdf_xml;
+        }
+        LOGI(get_node(), "Dumped robot_description to /tmp/controller_manager_robot_description.urdf");
+
+        try {
+          pinocchio::urdf::buildModelFromXML(tmp_urdf_xml, model_);
+          data_ = pinocchio::Data(model_);
+          data_worker_ = pinocchio::Data(model_);
+          q_model_ = Eigen::VectorXd::Zero(model_.nq);
+          qdot_model_ = Eigen::VectorXd::Zero(model_.nv);
+          LOGI(get_node(), "Pinocchio model built successfully: nq=%d nv=%d nframes=%d",
+              model_.nq, model_.nv, model_.nframes);
+
+          for (pinocchio::FrameIndex i = 0; i < model_.nframes; ++i)
+          {
+            LOGI(get_node(), "Frame[%d]: %s", static_cast<int>(i), model_.frames[i].name.c_str());
+          }
+        } catch (const std::exception& e) {
+          LOGE(get_node(), "Pinocchio build failed: %s", e.what());
+          return CallbackReturn::ERROR;
+        }
+        
         if (model_.getFrameId(ee_name_) >= static_cast<pinocchio::FrameIndex>(model_.nframes))
         {
           LOGW(get_node(),
@@ -455,12 +499,14 @@ void My_effort_controller::updateRobotData()
   }
 
   // Pinocchio fallback for simulation
-  pinocchio::forwardKinematics(model_, data_, q_, qdot_);
+  packPinocchioState(q_, qdot_);
+
+  pinocchio::forwardKinematics(model_, data_, q_model_, qdot_model_);
   pinocchio::updateFramePlacements(model_, data_);
-  pinocchio::computeJointJacobians(model_, data_, q_);
-  pinocchio::crba(model_, data_, q_);
-  pinocchio::computeGeneralizedGravity(model_, data_, q_);
-  pinocchio::nonLinearEffects(model_, data_, q_, qdot_);
+  pinocchio::computeJointJacobians(model_, data_, q_model_);
+  pinocchio::crba(model_, data_, q_model_);
+  pinocchio::computeGeneralizedGravity(model_, data_, q_model_);
+  pinocchio::nonLinearEffects(model_, data_, q_model_, qdot_model_);
 
   const pinocchio::FrameIndex frame_id =
       model_.getFrameId("fr3_hand_tcp") < model_.nframes
@@ -586,19 +632,26 @@ Eigen::Affine3d My_effort_controller::poseMsgToEigen(const geometry_msgs::msg::P
   return out;
 }
 
-bool My_effort_controller::solveIk(const Eigen::Affine3d& target_pose, const Eigen::Vector7d& seed_q, Eigen::Vector7d& q_solution)
+bool My_effort_controller::solveIk(
+    const Eigen::Affine3d& target_pose,
+    const Eigen::Vector7d& seed_q,
+    Eigen::Vector7d& q_solution)
 {
   if (!use_pinocchio_)
   {
     return false;
   }
 
-  Eigen::Vector7d q_iter = seed_q;
+  LOGI(get_node(), "IK ee_name_ = %s", ee_name_.c_str());
+
   const pinocchio::FrameIndex frame_id = model_.getFrameId(ee_name_);
   if (frame_id >= static_cast<pinocchio::FrameIndex>(model_.nframes))
   {
+    LOGW(get_node(), "IK frame '%s' not found", ee_name_.c_str());
     return false;
   }
+
+  Eigen::Vector7d q_iter = seed_q;
 
   constexpr int kMaxIter = 120;
   constexpr double kPosTol = 1e-3;
@@ -606,17 +659,26 @@ bool My_effort_controller::solveIk(const Eigen::Affine3d& target_pose, const Eig
   constexpr double kLambda = 1e-4;
   constexpr double kStep = 0.2;
 
-  for (int i = 0; i < kMaxIter; ++i)
+  for (int iter = 0; iter < kMaxIter; ++iter)
   {
-    pinocchio::forwardKinematics(model_, data_worker_, q_iter);
+    // Build full 9D model state from 7D arm state.
+    packPinocchioState(q_iter, Eigen::Vector7d::Zero());
+
+    // FK + Jacobian on full model
+    pinocchio::forwardKinematics(model_, data_worker_, q_model_);
     pinocchio::updateFramePlacements(model_, data_worker_);
+    pinocchio::computeJointJacobians(model_, data_worker_, q_model_);
 
     const auto& oMf = data_worker_.oMf[frame_id];
+
+    // 6D pose error in world-aligned coordinates
     const Eigen::Vector3d pos_err = target_pose.translation() - oMf.translation();
 
-    const Eigen::Matrix3d R_err = target_pose.rotation() * oMf.rotation().transpose();
-    const Eigen::AngleAxisd aa(R_err);
+    const Eigen::Matrix3d R_err =
+        target_pose.rotation() * oMf.rotation().transpose();
+
     Eigen::Vector3d ori_err = Eigen::Vector3d::Zero();
+    const Eigen::AngleAxisd aa(R_err);
     if (std::abs(aa.angle()) > 1e-9)
     {
       ori_err = aa.axis() * aa.angle();
@@ -628,21 +690,51 @@ bool My_effort_controller::solveIk(const Eigen::Affine3d& target_pose, const Eig
       return true;
     }
 
-    Eigen::Matrix<double, 6, 7> J = Eigen::Matrix<double, 6, 7>::Zero();
-    pinocchio::computeJointJacobians(model_, data_worker_, q_iter);
-    pinocchio::getFrameJacobian(model_, data_worker_, frame_id, pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, J);
-
     Eigen::Matrix<double, 6, 1> err6;
     err6.head<3>() = pos_err;
     err6.tail<3>() = ori_err;
 
-    const Eigen::Matrix<double, 7, 6> J_pinv = J.transpose() * (J * J.transpose() + kLambda * Eigen::Matrix<double, 6, 6>::Identity()).inverse();
+    // Full Jacobian is 6 x nv (= 9). Use only arm columns.
+    Eigen::Matrix<double, 6, Eigen::Dynamic> Jfull(6, model_.nv);
+    pinocchio::getFrameJacobian(
+        model_,
+        data_worker_,
+        frame_id,
+        pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED,
+        Jfull);
+
+    Eigen::Matrix<double, 6, 7> J = Jfull.leftCols<7>();
+
+    // Damped least-squares pseudoinverse
+    const Eigen::Matrix<double, 7, 6> J_pinv =
+        J.transpose() *
+        (J * J.transpose() +
+         kLambda * Eigen::Matrix<double, 6, 6>::Identity()).inverse();
+
     q_iter += kStep * (J_pinv * err6);
+
+    // Optional: clamp to joint limits here later if needed
   }
 
   q_solution = q_iter;
   return false;
 }
+
+void My_effort_controller::packPinocchioState(
+    const Eigen::Vector7d& q_arm, const Eigen::Vector7d& qdot_arm)
+{
+  q_model_.setZero();
+  qdot_model_.setZero();
+
+  q_model_.head<7>() = q_arm;
+  qdot_model_.head<7>() = qdot_arm;
+
+  // finger joints fixed for now
+  // if later you read real gripper joint states, put them here
+  // q_model_.tail<2>() << finger1, finger2;
+  // qdot_model_.tail<2>() << finger1dot, finger2dot;
+}
+
 
 }  // namespace dyros_fr3_controllers
 

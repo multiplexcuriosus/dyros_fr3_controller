@@ -1,41 +1,31 @@
 #pragma once
 
 #include <string>
-#include <chrono>
 #include <thread>
 #include <condition_variable>
 #include <atomic>
-#include <array>
-#include <cassert>
-#include <cmath>
-#include <exception>
-#include <Eigen/Eigen>
-#include <functional>
-#include <future>
+#include <memory>
+#include <mutex>
 
-#include <pinocchio/parsers/urdf.hpp>
-#include <pinocchio/algorithm/frames.hpp>
-#include <pinocchio/algorithm/kinematics.hpp>
-#include <pinocchio/algorithm/rnea.hpp>
-#include <pinocchio/algorithm/crba.hpp>
-#include <pinocchio/algorithm/compute-all-terms.hpp>
-#include <pinocchio/algorithm/jacobian.hpp>
+#include "math_type_define.h"
+#include <Eigen/Eigen>
+
 #include <pinocchio/multibody/model.hpp>
 #include <pinocchio/multibody/data.hpp>
-#include <pinocchio/multibody/joint/joint-collection.hpp>
 
 #include <rclcpp/rclcpp.hpp>
-#include <rclcpp/qos.hpp>
 #include <rclcpp_lifecycle/state.hpp>
 #include <controller_interface/controller_interface.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <std_msgs/msg/int32.hpp>
 
-#include "franka_semantic_components/franka_robot_model.hpp"
-#include "franka_semantic_components/franka_robot_state.hpp"
 #include "dyros_fr3_interfaces/srv/set_track_pose.hpp"
-#include "math_type_define.h"
-#include "suhan_benchmark.h"
+
+namespace franka_semantic_components
+{
+class FrankaRobotModel;
+class FrankaRobotState;
+}
 
 namespace ConsoleColor
 {
@@ -49,10 +39,12 @@ namespace ConsoleColor
 #define LOGW(node, fmt, ...) RCLCPP_WARN((node)->get_logger(),  (std::string(ConsoleColor::YELLOW) + fmt + ConsoleColor::RESET).c_str(), ##__VA_ARGS__)
 #define LOGE(node, fmt, ...) RCLCPP_ERROR((node)->get_logger(), (std::string(ConsoleColor::RED)    + fmt + ConsoleColor::RESET).c_str(), ##__VA_ARGS__)
 
-using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+using CallbackReturn =
+    rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
 namespace dyros_fr3_controllers
 {
+
 class My_effort_controller : public controller_interface::ControllerInterface
 {
 public:
@@ -69,9 +61,6 @@ public:
 private:
   enum class CtrlMode { NONE = 0, HOME = 1, TRACK = 2 };
 
-  // ======================================================================
-  // ========================= Robot state / command =======================
-  // ======================================================================
   Eigen::Vector7d q_init_;
   Eigen::Vector7d qdot_init_;
   Eigen::Vector7d q_;
@@ -99,9 +88,6 @@ private:
   Eigen::Vector6d g_task_;
   Eigen::Matrix<double, 6, 7> J_T_inv_;
 
-  // ======================================================================
-  // ============================ Controller data ==========================
-  // ======================================================================
   const double dt_{0.001};
   Eigen::Vector7d kp_joint_;
   Eigen::Vector7d kv_joint_;
@@ -121,24 +107,15 @@ private:
 
   Eigen::Affine3d track_pose_target_{Eigen::Affine3d::Identity()};
 
-  // ======================================================================
-  // ============================== Parameters =============================
-  // ======================================================================
   std::string arm_id_;
   std::unique_ptr<franka_semantic_components::FrankaRobotModel> franka_robot_model_;
   static constexpr int num_joints = 7;
   bool use_pinocchio_{true};
   bool use_franka_model_{false};
 
-  // ======================================================================
-  // ============================ ROS I/O =================================
-  // ======================================================================
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr control_mode_sub_;
   rclcpp::Service<dyros_fr3_interfaces::srv::SetTrackPose>::SharedPtr track_pose_srv_;
 
-  // ======================================================================
-  // ======================== Mutex / worker thread =======================
-  // ======================================================================
   std::mutex robot_data_mutex_;
   std::mutex calculation_mutex_;
   std::atomic<bool> compute_inflight_{false};
@@ -151,9 +128,6 @@ private:
   bool compute_completed_{false};
   bool stop_compute_thread_{false};
 
-  // ======================================================================
-  // ============================ Core methods =============================
-  // ======================================================================
   void compute();
   void updateJointStates();
   void updateRobotData();
@@ -161,29 +135,25 @@ private:
   void computeWorkerLoop();
   void initializeModeTargets();
 
-  // ======================================================================
-  // ============================== ROS callbacks ==========================
-  // ======================================================================
   void controlModeCallback(const std_msgs::msg::Int32& msg);
   void trackPoseCallback(
       const std::shared_ptr<dyros_fr3_interfaces::srv::SetTrackPose::Request> request,
       std::shared_ptr<dyros_fr3_interfaces::srv::SetTrackPose::Response> response);
 
-  // ======================================================================
-  // ============================== Utilities ==============================
-  // ======================================================================
+  void packPinocchioState(const Eigen::Vector7d& q_arm, const Eigen::Vector7d& qdot_arm);
+
   Eigen::Vector7d JointPDControl(const Eigen::Vector7d& target_q, const Eigen::Vector7d& target_qdot);
   Eigen::Affine3d poseMsgToEigen(const geometry_msgs::msg::Pose& pose) const;
   bool solveIk(const Eigen::Affine3d& target_pose, const Eigen::Vector7d& seed_q, Eigen::Vector7d& q_solution);
 
-  // ======================================================================
-  // ========================== Pinocchio model ============================
-  // ======================================================================
   pinocchio::Model model_;
   pinocchio::Data data_;
   pinocchio::Data data_worker_;
   std::string ee_name_{"fr3_hand_tcp"};
   bool pinocchio_ready_{false};
+
+  Eigen::VectorXd q_model_;
+  Eigen::VectorXd qdot_model_;
 };
 
 }  // namespace dyros_fr3_controllers
