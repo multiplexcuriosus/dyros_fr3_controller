@@ -107,7 +107,12 @@ def generate_robot_nodes(context):
             namespace=namespace,
             arguments=['franka_robot_state_broadcaster'],
             parameters=[{'arm_id': LaunchConfiguration('arm_id').perform(context)}],
-            condition=UnlessCondition(LaunchConfiguration('use_fake_hardware')),
+            condition=IfCondition(
+                PythonExpression([
+                    "'", LaunchConfiguration('use_fake_hardware'), "' != 'true' and '",
+                    LaunchConfiguration('use_mujoco'), "' != 'true'"
+                ])
+            ),
             output='screen',
         ),
         IncludeLaunchDescription(

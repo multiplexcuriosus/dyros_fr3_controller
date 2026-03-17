@@ -1,0 +1,8 @@
+my_effort_controller:
+  ros__parameters:
+    arm_id: fr3
+    kp_joint_gains: [600.0, 600.0, 600.0, 600.0, 250.0, 150.0, 50.0]
+    kv_joint_gains: [30.0, 30.0, 30.0, 30.0, 10.0, 10.0, 5.0]
+    home_joint_pose: [0.0, 0.0, 0.0, -1.5707963, 0.0, 1.5707963, 0.7853982]
+    home_duration_sec: 4.0
+    track_duration_sec: 2.0

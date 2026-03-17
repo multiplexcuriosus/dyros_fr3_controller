@@ -8,10 +8,11 @@
   <license>Apache 2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  
+
   <depend>controller_interface</depend>
   <depend>franka_msgs</depend>
   <depend>franka_semantic_components</depend>
+  <depend>geometry_msgs</depend>
   <depend>pinocchio</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
@@ -19,6 +20,7 @@
   <depend>sensor_msgs</depend>
   <depend>std_srvs</depend>
   <depend>std_msgs</depend>
+  <depend>dyros_fr3_interfaces</depend>
 
   <exec_depend>franka_description</exec_depend>
   <exec_depend>franka_hardware</exec_depend>
@@ -43,7 +45,6 @@
   <test_depend>controller_manager</test_depend>
   <test_depend>hardware_interface_testing</test_depend>
   <test_depend>ros2_control_test_assets</test_depend>
-
 
   <export>
     <build_type>ament_cmake</build_type>

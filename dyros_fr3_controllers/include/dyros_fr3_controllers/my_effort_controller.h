@@ -10,33 +10,39 @@
 #include <cmath>
 #include <exception>
 #include <Eigen/Eigen>
-#include <functional> 
+#include <functional>
 #include <future>
+
 #include <pinocchio/parsers/urdf.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/algorithm/crba.hpp>
 #include <pinocchio/algorithm/compute-all-terms.hpp>
+#include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/multibody/model.hpp>
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/joint/joint-collection.hpp>
+
 #include <rclcpp/rclcpp.hpp>
-#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <rclcpp/qos.hpp>
+#include <rclcpp_lifecycle/state.hpp>
 #include <controller_interface/controller_interface.hpp>
+#include <geometry_msgs/msg/pose.hpp>
 #include <std_msgs/msg/int32.hpp>
+
 #include "franka_semantic_components/franka_robot_model.hpp"
 #include "franka_semantic_components/franka_robot_state.hpp"
-
+#include "dyros_fr3_interfaces/srv/set_track_pose.hpp"
 #include "math_type_define.h"
 #include "suhan_benchmark.h"
 
-namespace ConsoleColor 
+namespace ConsoleColor
 {
-  inline constexpr const char* RESET = "[0m";
-  inline constexpr const char* BLUE  = "[34m"; // Info
-  inline constexpr const char* YELLOW= "[33m"; // Warn
-  inline constexpr const char* RED   = "[31m"; // Error
+  inline constexpr const char* RESET = "\033[0m";
+  inline constexpr const char* BLUE  = "\033[34m";
+  inline constexpr const char* YELLOW= "\033[33m";
+  inline constexpr const char* RED   = "\033[31m";
 }
 
 #define LOGI(node, fmt, ...) RCLCPP_INFO((node)->get_logger(),  (std::string(ConsoleColor::BLUE)   + fmt + ConsoleColor::RESET).c_str(), ##__VA_ARGS__)
@@ -45,148 +51,139 @@ namespace ConsoleColor
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
-namespace dyros_fr3_controllers 
+namespace dyros_fr3_controllers
 {
-class My_effort_controller : public controller_interface::ControllerInterface 
+class My_effort_controller : public controller_interface::ControllerInterface
 {
-    public:
-        ~My_effort_controller() override;
-        // ========================================================================
-        // ============================ Core Functions ============================
-        // ========================================================================
-        [[nodiscard]] controller_interface::InterfaceConfiguration command_interface_configuration() const override;
-        [[nodiscard]] controller_interface::InterfaceConfiguration state_interface_configuration() const override;
-        controller_interface::return_type update(const rclcpp::Time& time, const rclcpp::Duration& period) override;
-        CallbackReturn on_init() override;
-        CallbackReturn on_configure(const rclcpp_lifecycle::State& previous_state) override;
-        CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) override;
-        CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
+public:
+  ~My_effort_controller() override;
 
-    private:
-        // ========================================================================
-        // =========================== Franka robot Data ==========================
-        // ========================================================================
-        // ====== Joint space data ======
-        // initial state
-        Eigen::Vector7d q_init_;
-        Eigen::Vector7d qdot_init_;
+  [[nodiscard]] controller_interface::InterfaceConfiguration command_interface_configuration() const override;
+  [[nodiscard]] controller_interface::InterfaceConfiguration state_interface_configuration() const override;
+  controller_interface::return_type update(const rclcpp::Time& time, const rclcpp::Duration& period) override;
+  CallbackReturn on_init() override;
+  CallbackReturn on_configure(const rclcpp_lifecycle::State& previous_state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
 
-        // current state
-        Eigen::Vector7d q_;
-        Eigen::Vector7d qdot_;
-        Eigen::Vector7d torque_;
+private:
+  enum class CtrlMode { NONE = 0, HOME = 1, TRACK = 2 };
 
-        // control value
-        Eigen::Vector7d q_desired_;
-        Eigen::Vector7d qdot_desired_;
-        Eigen::Vector7d torque_desired_;
+  // ======================================================================
+  // ========================= Robot state / command =======================
+  // ======================================================================
+  Eigen::Vector7d q_init_;
+  Eigen::Vector7d qdot_init_;
+  Eigen::Vector7d q_;
+  Eigen::Vector7d qdot_;
+  Eigen::Vector7d torque_;
 
-        // Dynamics
-        Eigen::Matrix7d M_;
-        Eigen::Matrix7d M_inv_;
-        Eigen::Vector7d c_;
-        Eigen::Vector7d g_;
+  Eigen::Vector7d q_desired_;
+  Eigen::Vector7d qdot_desired_;
+  Eigen::Vector7d torque_desired_;
 
-        // ====== Task space data =======
-        // initial state
-        Eigen::Affine3d x_init_;
-        Eigen::Vector6d xdot_init_;
+  Eigen::Matrix7d M_;
+  Eigen::Matrix7d M_inv_;
+  Eigen::Vector7d c_;
+  Eigen::Vector7d g_;
 
-        // current state
-        Eigen::Affine3d x_;
-        Eigen::Vector6d xdot_;
-        Eigen::Matrix<double, 6, 7> J_;
+  Eigen::Affine3d x_init_;
+  Eigen::Vector6d xdot_init_;
+  Eigen::Affine3d x_;
+  Eigen::Vector6d xdot_;
+  Eigen::Matrix<double, 6, 7> J_;
 
-        //
-        Eigen::Affine3d x_desired_;
-        Eigen::Vector6d xdot_desired_;
+  Eigen::Affine3d x_desired_;
+  Eigen::Vector6d xdot_desired_;
+  Eigen::Matrix6d M_task_;
+  Eigen::Vector6d g_task_;
+  Eigen::Matrix<double, 6, 7> J_T_inv_;
 
-        // Dynamics
-        Eigen::Matrix6d M_task_;
-        Eigen::Vector6d g_task_;
-        Eigen::Matrix<double, 6, 7> J_T_inv_;
+  // ======================================================================
+  // ============================ Controller data ==========================
+  // ======================================================================
+  const double dt_{0.001};
+  Eigen::Vector7d kp_joint_;
+  Eigen::Vector7d kv_joint_;
+  Eigen::Vector7d home_q_;
+  Eigen::Vector7d track_q_target_;
+  Eigen::Vector7d last_ik_solution_;
 
-        // ========================================================================
-        // =========================== Controller data ============================
-        // ========================================================================
-        const double dt_{0.001};
-        Eigen::Vector7d kp_joint_;
-        Eigen::Vector7d kv_joint_;
-        double play_time_{0.0};
-        double control_start_time_{0.0};
+  double play_time_{0.0};
+  double control_start_time_{0.0};
+  double home_duration_sec_{4.0};
+  double track_duration_sec_{2.0};
 
-        enum class CtrlMode{NONE, HOME};
-        CtrlMode control_mode_{CtrlMode::HOME};
-        bool is_mode_changed_ {false};
+  CtrlMode control_mode_{CtrlMode::HOME};
+  bool is_mode_changed_{false};
+  bool initialization_flag_{true};
+  bool track_target_valid_{false};
 
-        SuhanBenchmark bench_timer_;
+  Eigen::Affine3d track_pose_target_{Eigen::Affine3d::Identity()};
 
-        // ========================================================================
-        // ============================== Parameters ==============================
-        // ========================================================================
-        std::string arm_id_;
-        std::unique_ptr<franka_semantic_components::FrankaRobotModel> franka_robot_model_;
-        const int num_joints = 7;
-        bool initialization_flag_{true};
+  // ======================================================================
+  // ============================== Parameters =============================
+  // ======================================================================
+  std::string arm_id_;
+  std::unique_ptr<franka_semantic_components::FrankaRobotModel> franka_robot_model_;
+  static constexpr int num_joints = 7;
+  bool use_pinocchio_{true};
+  bool use_franka_model_{false};
 
-        // ========================================================================
-        // =========================== ROS Subs & Pubs  ===========================
-        // ========================================================================
-        rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr control_mode_sub_;
+  // ======================================================================
+  // ============================ ROS I/O =================================
+  // ======================================================================
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr control_mode_sub_;
+  rclcpp::Service<dyros_fr3_interfaces::srv::SetTrackPose>::SharedPtr track_pose_srv_;
 
-        // ========================================================================
-        // ============================ Mutex & Thread ============================
-        // ========================================================================
-        std::mutex robot_data_mutex_;
-        std::mutex calculation_mutex_;
-        std::atomic<bool> compute_inflight_{false};
-        std::atomic<bool> relax_wait_guard_{false};
-        std::thread compute_thread_;
-        std::mutex compute_cv_mutex_;
-        std::condition_variable compute_cv_;
-        std::condition_variable compute_done_cv_;
-        bool compute_requested_{false};
-        bool compute_completed_{false};
-        bool stop_compute_thread_{false};
+  // ======================================================================
+  // ======================== Mutex / worker thread =======================
+  // ======================================================================
+  std::mutex robot_data_mutex_;
+  std::mutex calculation_mutex_;
+  std::atomic<bool> compute_inflight_{false};
+  std::atomic<bool> relax_wait_guard_{false};
+  std::thread compute_thread_;
+  std::mutex compute_cv_mutex_;
+  std::condition_variable compute_cv_;
+  std::condition_variable compute_done_cv_;
+  bool compute_requested_{false};
+  bool compute_completed_{false};
+  bool stop_compute_thread_{false};
 
-        // ========================================================================
-        // ====================== Main Controller Functions =======================
-        // ========================================================================
-        void compute();
-        void updateJointStates();			
-        void updateRobotData();
-        void setMode(CtrlMode control_mode);
-        void computeWorkerLoop();
+  // ======================================================================
+  // ============================ Core methods =============================
+  // ======================================================================
+  void compute();
+  void updateJointStates();
+  void updateRobotData();
+  void setMode(CtrlMode control_mode);
+  void computeWorkerLoop();
+  void initializeModeTargets();
 
-        // ========================================================================
-        // =========================== ROS Subs & Pubs  ===========================
-        // ========================================================================
-        void controlModeCallback(const std_msgs::msg::Int32& msg);
+  // ======================================================================
+  // ============================== ROS callbacks ==========================
+  // ======================================================================
+  void controlModeCallback(const std_msgs::msg::Int32& msg);
+  void trackPoseCallback(
+      const std::shared_ptr<dyros_fr3_interfaces::srv::SetTrackPose::Request> request,
+      std::shared_ptr<dyros_fr3_interfaces::srv::SetTrackPose::Response> response);
 
-        // ========================================================================
-        // ========================== Utility Functions ===========================
-        // ========================================================================
-        Eigen::Vector7d JointPDControl(const Eigen::Vector7d target_q, const Eigen::Vector7d target_qdot);
+  // ======================================================================
+  // ============================== Utilities ==============================
+  // ======================================================================
+  Eigen::Vector7d JointPDControl(const Eigen::Vector7d& target_q, const Eigen::Vector7d& target_qdot);
+  Eigen::Affine3d poseMsgToEigen(const geometry_msgs::msg::Pose& pose) const;
+  bool solveIk(const Eigen::Affine3d& target_pose, const Eigen::Vector7d& seed_q, Eigen::Vector7d& q_solution);
 
-
-        // ==========================================================================
-        // =========================== Pinocchio / Model ============================
-        // ==========================================================================
-        std::string urdf_path;
-        bool use_pinocchio_{false};
-        pinocchio::Model model_;
-        pinocchio::Data data_;
-        pinocchio::Data data_worker_;
-        std::string ee_name_{"fr3_hand_tcp"};
-        std::vector<std::string> link_names_{"fr3_link0", 
-                                             "fr3_link1", 
-                                             "fr3_link2",
-                                             "fr3_link3",
-                                             "fr3_link4",
-                                             "fr3_link5",
-                                             "fr3_link6",
-                                             "fr3_link7"};
+  // ======================================================================
+  // ========================== Pinocchio model ============================
+  // ======================================================================
+  pinocchio::Model model_;
+  pinocchio::Data data_;
+  pinocchio::Data data_worker_;
+  std::string ee_name_{"fr3_hand_tcp"};
+  bool pinocchio_ready_{false};
 };
 
 }  // namespace dyros_fr3_controllers
-
